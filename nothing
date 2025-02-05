@@ -1,3 +1,0 @@
-git add datasets/Acemoglu_Robinson_2001.csv
-git commit -m "Move Acemoglu_Robinson_2001.csv to datasets folder"
-
