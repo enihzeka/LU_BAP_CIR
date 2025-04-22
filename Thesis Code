@@ -1,0 +1,422 @@
+# Load necessary libraries
+library(dplyr)
+library(readr)
+library(stringr)
+
+# Load datasets (update file paths if necessary)
+emdat <- read_csv("EMDATfull.csv")
+world_risk <- read_csv("Worldriskindex2000-2024.csv")
+
+# Standardize column names
+colnames(emdat) <- tolower(colnames(emdat))
+colnames(world_risk) <- tolower(colnames(world_risk))
+
+# Custom color palette (for later plotting)
+custom_colors <- c("#f6765b", "#c7dcff", "#f6e7ff", "#ebffcb", "#d6fffb", "#ffe9d9", "#ffe1fc")
+
+# Inspect and rename EM-DAT columns
+print(colnames(emdat))
+emdat <- emdat %>%
+  dplyr::rename(
+    iso3c = iso,
+    year = `start year`,
+    total_affected = `total affected`,
+    total_damage = `total damage, adjusted ('000 us$)`,
+    aid_received = `ofda/bha response`,
+    appeal = appeal,
+    disaster_type = `disaster type`,
+    disaster_group = `disaster subgroup`,
+    disaster_id = `disno.`,
+    magnitude = magnitude,
+    total_deaths = `total deaths`,
+    magnitude_scale = `magnitude scale`
+  )
+
+print(colnames(emdat))
+
+# Filter only relevant columns if they exist
+valid_columns <- c("iso3c", "year", "total_affected", "total_damage", "aid_received",
+                   "appeal", "disaster_type", "disaster_id", "disaster_group",
+                   "magnitude", "total_deaths", "magnitude_scale")
+
+emdat <- emdat %>%
+  dplyr::select(all_of(intersect(valid_columns, colnames(emdat))))
+
+
+# Standardize and convert world_risk values
+world_risk <- world_risk %>%
+  dplyr::rename(iso3c = iso3.code) %>%
+  mutate(across(where(is.character), ~ str_replace_all(., ",", "."))) %>%
+  mutate(across(where(~ all(str_detect(., "^[-+]?[0-9]*\\.?[0-9]+$"), na.rm = TRUE)), as.numeric))
+
+
+# Merge EM-DAT and World Risk data
+merged_data <- world_risk %>%
+  left_join(emdat, by = c("iso3c", "year"))
+
+print(summary(merged_data))
+
+# Load and clean World Bank data
+wb_data <- read_csv("WBData.csv")
+wb_data[wb_data == ".."] <- NA
+
+colnames(wb_data) <- tolower(colnames(wb_data))
+
+wb_data <- wb_data %>%
+  dplyr::rename(
+    electricity = `access to electricity (% of population) [eg.elc.accs.zs]`,
+    military    = `military expenditure (% of gdp) [ms.mil.xpnd.gd.zs]`,
+    urban_pop   = `urban population (% of total population) [sp.urb.totl.in.zs]`,
+    r_d         = `firms that spend on r&d (% of firms) [ic.frm.rsdv.zs]`,
+    internet    = `individuals using the internet (% of population) [it.net.user.zs]`,
+    mobile      = `mobile cellular subscriptions (per 100 people) [it.cel.sets.p2]`
+  ) %>%
+  mutate(across(c(electricity, military, urban_pop, r_d, internet, mobile), as.numeric)) %>%
+  dplyr::rename(
+    iso3c = `country code`,
+    year = time
+  )
+
+
+
+
+wb_data <- wb_data %>%
+  mutate(year = as.numeric(year))
+
+# Merge all data
+merged_data <- merged_data %>%
+  left_join(wb_data, by = c("iso3c", "year"))
+
+print(summary(merged_data))
+
+# Export final dataset
+write_csv(merged_data, "merged_emdat_worldrisk_wbdata.csv")
+
+data <- read_csv("merged_emdat_worldrisk_wbdata.csv")
+
+# Load necessary libraries
+library(dplyr)
+library(readr)
+library(caret)
+library(randomForest)
+
+# Load the merged dataset
+data <- read_csv("merged_emdat_worldrisk_wbdata.csv")
+
+data <- data %>%
+  dplyr::rename(
+    dis_typ = disaster_type,
+    disaster_type = disaster_group
+  )
+
+
+# Convert back to factor if needed
+data <- data %>%
+  mutate(disaster_type = as.factor(disaster_type))
+
+# View updated data
+summary(data$disaster_type)
+
+library(dplyr)
+library(stringr)
+
+data <- data %>%
+  mutate(across(where(is.character), ~ str_replace_all(., ",", "."))) %>%  # Replace commas with dots
+  mutate(across(where(~ all(str_detect(., "^[-+]?[0-9]*\\.?[0-9]+$"), na.rm = TRUE)), as.numeric))  # Convert valid numerics to numbers
+
+data <- data %>%
+  mutate(across(where(is.character), ~ as.numeric(str_replace_all(., ",", "."))))
+
+
+col_info <- data.frame(Column_Number = seq_along(names(data)), Column_Name = names(data))
+print(col_info)
+
+# Step 1: Lag the country-specific predictors (taking previous year's data)
+data_lagged <- data %>%
+  arrange(iso3c, year) %>%  # Ensure data is sorted properly
+  group_by(iso3c) %>%
+  mutate(across(c(9:147, 160:165), ~ lag(.x, n = 1), .names = "{.col}_lag")) %>%
+  ungroup()
+
+data_lagged <- data_lagged %>%
+  dplyr::select(
+    iso3c, year, ends_with("_lag"),
+    disaster_id, disaster_type,
+    total_affected, total_damage, total_deaths, appeal
+  ) %>%
+  filter(!is.na(total_affected))
+
+
+
+# Step 1: Identify numeric columns to lag (excluding target vars)
+num_cols <- names(data)[sapply(data, is.numeric)]
+targets <- c("total_affected", "total_damage", "total_deaths")
+to_lag <- setdiff(num_cols, targets)
+
+# Step 2: Lag them by country
+data_lagged <- data %>%
+  arrange(iso3c, year) %>%
+  group_by(iso3c) %>%
+  mutate(across(all_of(to_lag), ~ lag(.x, 1), .names = "{.col}_lag")) %>%
+  ungroup()
+
+
+
+# Create a dataset with all columns but only rows where total_deaths is not NA
+data_total_deaths <- data_lagged %>%
+  filter(!is.na(total_deaths))
+
+# Create a dataset with all columns but only rows where total_damage is not NA
+data_total_damage <- data_lagged %>%
+  filter(!is.na(total_damage))
+
+# Print dimensions to check results
+print(dim(data_total_deaths))
+print(dim(data_total_damage))
+
+# Optionally, save them as new datasets
+write.csv(data_total_deaths, "data_total_deaths.csv", row.names = FALSE)
+write.csv(data_total_damage, "data_total_damage.csv", row.names = FALSE)
+
+
+
+# Load necessary libraries
+library(dplyr)
+library(VIM)  # For kNN imputation
+
+
+# Step 2: Ensure disaster_type is a factor and convert to numeric
+death_run$disaster_type <- as.numeric(as.factor(death_run$disaster_type))
+
+death_run_1 <- subset(death_run, disaster_type == 1)
+death_run_2 <- subset(death_run, disaster_type == 2)
+death_run_3 <- subset(death_run, disaster_type == 3)
+death_run_4 <- subset(death_run, disaster_type == 4)
+
+
+library(caret)
+library(randomForest)
+
+# Define variables to select
+selected_vars <- c("ai_01a_lag", "ai_02a_lag", "ai_02b_lag",
+                   "ci_01b_lag", "ci_03a_lag", "ci_03b_lag", "ci_04a_lag", "ci_04b_lag",
+                   "ci_06a_lag", "ci_06b_lag", "s_05_lag", "si_01a_lag", "si_02a_lag",
+                   "si_02b_lag", "si_03a_lag", "si_05a_lag", "si_06a_lag", "si_07b_lag",
+                   "si_08a_lag", "si_09a_lag", "military_lag", "urban_pop_lag", "electricity_lag")
+
+# Evaluation function
+evaluate_model <- function(actual, predicted) {
+  r_squared <- cor(actual, predicted, use = "complete.obs")^2
+  rmse <- sqrt(mean((actual - predicted)^2))
+  return(c(R2 = round(r_squared, 3), RMSE = round(rmse, 3)))
+}
+
+# Pipeline function
+run_model_pipeline <- function(df, name = "Dataset") {
+  # Ensure numeric conversion
+  df[selected_vars] <- lapply(df[selected_vars], as.numeric)
+  
+  # Train-test split
+  set.seed(123)
+  splitIndex <- createDataPartition(df$log_total_deaths, p = 0.7, list = FALSE)
+  train_data <- df[splitIndex, ]
+  test_data <- df[-splitIndex, ]
+  
+  # Model formula
+  model_formula <- as.formula(paste("log_total_deaths ~", paste(selected_vars, collapse = " + ")))
+  
+  # OLS
+  ols_model <- lm(model_formula, data = train_data)
+  ols_predictions <- predict(ols_model, newdata = test_data)
+  
+  # kNN
+  set.seed(123)
+  knn_model <- train(model_formula, data = train_data, method = "knn", tuneLength = 10)
+  knn_predictions <- predict(knn_model, newdata = test_data)
+  
+  # Random Forest
+  set.seed(123)
+  rf_model <- train(model_formula, data = train_data, method = "rf",
+                    trControl = trainControl(method = "cv", number = 5),
+                    tuneLength = 5, importance = TRUE)
+  rf_predictions <- predict(rf_model, newdata = test_data)
+  
+  # Evaluation
+  ols_results <- evaluate_model(test_data$total_deaths, ols_predictions)
+  knn_results <- evaluate_model(test_data$total_deaths, knn_predictions)
+  rf_results <- evaluate_model(test_data$total_deaths, rf_predictions)
+  
+  # Output
+  cat("\nModel Performance for", name, "\n")
+  cat(sprintf("OLS - R²: %.3f | RMSE: %.3f\n", ols_results["R2"], ols_results["RMSE"]))
+  cat(sprintf("kNN - R²: %.3f | RMSE: %.3f\n", knn_results["R2"], knn_results["RMSE"]))
+  cat(sprintf("RF  - R²: %.3f | RMSE: %.3f\n", rf_results["R2"], rf_results["RMSE"]))
+}
+
+# Run for each dataset
+run_model_pipeline(death_run_1, "death_run_1")
+run_model_pipeline(death_run_2, "death_run_2")
+run_model_pipeline(death_run_3, "death_run_3")
+run_model_pipeline(death_run_4, "death_run_4")
+
+
+# Load libraries
+library(ggplot2)
+library(dplyr)
+
+# Set Times New Roman globally (Windows/macOS only if font is installed)
+theme_set(theme_minimal(base_family = "Times New Roman"))
+
+# Ensure disaster_type is numeric
+death_run$disaster_type <- as.numeric(as.factor(death_run$disaster_type))
+
+# Define labels and colors
+disaster_labels <- c("Climatological", "Geophysical", "Hydrological", "Meteorological")
+type_colors <- c("#ebffcb", "#ffe9d9", "#d6fffb", "#ffe1fc")
+
+# Create labeled factor
+death_run$disaster_type <- factor(death_run$disaster_type,
+                                  levels = 1:4,
+                                  labels = disaster_labels)
+
+# Count frequency (using dplyr correctly)
+disaster_freq <- dplyr::count(death_run, disaster_type)
+
+# Create plot
+ggplot(disaster_freq, aes(x = disaster_type, y = n, fill = disaster_type)) +
+  geom_col(color = "black", width = 0.7) +
+  scale_fill_manual(values = type_colors) +
+  labs(
+    title = "Disaster Frequency in death_run Dataset",
+    x = "Disaster Type",
+    y = "Frequency",
+    fill = "Disaster Type"
+  ) +
+  theme_minimal(base_family = "Times New Roman") +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none",
+    panel.grid.major.y = element_line(color = "gray80"),
+    panel.grid.minor = element_blank()
+  )
+
+
+# Step 1: Ensure disaster_type is numeric based on factor levels
+data_cost$disaster_type <- as.numeric(as.factor(data_cost$disaster_type))
+
+# Step 2: Subset by disaster_type values
+data_cost_1 <- subset(data_cost, disaster_type == 1)
+data_cost_2 <- subset(data_cost, disaster_type == 2)
+data_cost_3 <- subset(data_cost, disaster_type == 3)
+data_cost_4 <- subset(data_cost, disaster_type == 4)
+
+# Step 3: Load necessary libraries
+library(caret)
+library(randomForest)
+
+# Step 4: Define variables to select
+selected_vars <- c("ai_01a_lag", "ai_02a_lag", "ai_02b_lag",
+                   "ci_01b_lag", "ci_03a_lag", "ci_03b_lag", "ci_04a_lag", "ci_04b_lag",
+                   "ci_06a_lag", "ci_06b_lag", "s_05_lag", "si_01a_lag", "si_02a_lag",
+                   "si_02b_lag", "si_03a_lag", "si_05a_lag", "si_06a_lag", "si_07b_lag",
+                   "si_08a_lag", "si_09a_lag", "military_lag", "urban_pop_lag", "electricity_lag")
+
+# Step 5: Define evaluation function
+evaluate_model <- function(actual, predicted) {
+  r_squared <- cor(actual, predicted, use = "complete.obs")^2
+  rmse <- sqrt(mean((actual - predicted)^2))
+  return(c(R2 = round(r_squared, 3), RMSE = round(rmse, 3)))
+}
+
+# Step 6: Define full model pipeline (predicting total_damage)
+run_model_pipeline <- function(df, name = "Dataset") {
+  # Ensure numeric conversion
+  df[selected_vars] <- lapply(df[selected_vars], as.numeric)
+  
+  # Train-test split
+  set.seed(123)
+  splitIndex <- createDataPartition(df$total_damage, p = 0.7, list = FALSE)
+  train_data <- df[splitIndex, ]
+  test_data <- df[-splitIndex, ]
+  
+  # Model formula
+  model_formula <- as.formula(paste("total_damage ~", paste(selected_vars, collapse = " + ")))
+  
+  # OLS
+  ols_model <- lm(model_formula, data = train_data)
+  ols_predictions <- predict(ols_model, newdata = test_data)
+  
+  # kNN
+  set.seed(123)
+  knn_model <- train(model_formula, data = train_data, method = "knn", tuneLength = 10)
+  knn_predictions <- predict(knn_model, newdata = test_data)
+  
+  # Random Forest
+  set.seed(123)
+  rf_model <- train(model_formula, data = train_data, method = "rf",
+                    trControl = trainControl(method = "cv", number = 5),
+                    tuneLength = 5, importance = TRUE)
+  rf_predictions <- predict(rf_model, newdata = test_data)
+  
+  # Evaluation
+  ols_results <- evaluate_model(test_data$total_damage, ols_predictions)
+  knn_results <- evaluate_model(test_data$total_damage, knn_predictions)
+  rf_results <- evaluate_model(test_data$total_damage, rf_predictions)
+  
+  # Output
+  cat("\nModel Performance for", name, "\n")
+  cat(sprintf("OLS - R²: %.3f | RMSE: %.3f\n", ols_results["R2"], ols_results["RMSE"]))
+  cat(sprintf("kNN - R²: %.3f | RMSE: %.3f\n", knn_results["R2"], knn_results["RMSE"]))
+  cat(sprintf("RF  - R²: %.3f | RMSE: %.3f\n", rf_results["R2"], rf_results["RMSE"]))
+}
+
+# Step 7: Run model for each disaster type subset
+run_model_pipeline(data_cost_1, "data_cost_1")
+run_model_pipeline(data_cost_2, "data_cost_2")
+run_model_pipeline(data_cost_3, "data_cost_3")
+run_model_pipeline(data_cost_4, "data_cost_4")
+
+
+# Load libraries (skip if already loaded)
+library(ggplot2)
+library(dplyr)
+
+# Set Times New Roman theme globally (optional again if already set)
+theme_set(theme_minimal(base_family = "Times New Roman"))
+
+# Ensure disaster_type is numeric and labeled properly
+data_cost$disaster_type <- as.numeric(as.factor(data_cost$disaster_type))
+
+# Define labels and colors
+disaster_labels <- c("Climatological", "Geophysical", "Hydrological", "Meteorological")
+type_colors <- c("#ebffcb", "#ffe9d9", "#d6fffb", "#ffe1fc")
+
+# Recode as factor with labels
+data_cost$disaster_type <- factor(data_cost$disaster_type,
+                                  levels = 1:4,
+                                  labels = disaster_labels)
+
+# Count frequency
+disaster_freq_cost <- dplyr::count(data_cost, disaster_type)
+
+# Create plot
+ggplot(disaster_freq_cost, aes(x = disaster_type, y = n, fill = disaster_type)) +
+  geom_col(color = "black", width = 0.7) +
+  scale_fill_manual(values = type_colors) +
+  labs(
+    title = "Disaster Frequency in data_cost Dataset",
+    x = "Disaster Type",
+    y = "Frequency",
+    fill = "Disaster Type"
+  ) +
+  theme_minimal(base_family = "Times New Roman") +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none",
+    panel.grid.major.y = element_line(color = "gray80"),
+    panel.grid.minor = element_blank()
+  )
+
+
