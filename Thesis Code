@@ -1,3 +1,5 @@
+________________________________ Data Merging Phase __________________________
+
 # Load necessary libraries
 library(dplyr)
 library(readr)
@@ -78,8 +80,6 @@ wb_data <- wb_data %>%
   )
 
 
-
-
 wb_data <- wb_data %>%
   mutate(year = as.numeric(year))
 
@@ -93,6 +93,8 @@ print(summary(merged_data))
 write_csv(merged_data, "merged_emdat_worldrisk_wbdata.csv")
 
 data <- read_csv("merged_emdat_worldrisk_wbdata.csv")
+
+________________________________ Data Cleaning and Preperation  __________________________
 
 # Load necessary libraries
 library(dplyr)
@@ -131,23 +133,6 @@ data <- data %>%
 col_info <- data.frame(Column_Number = seq_along(names(data)), Column_Name = names(data))
 print(col_info)
 
-# Step 1: Lag the country-specific predictors (taking previous year's data)
-data_lagged <- data %>%
-  arrange(iso3c, year) %>%  # Ensure data is sorted properly
-  group_by(iso3c) %>%
-  mutate(across(c(9:147, 160:165), ~ lag(.x, n = 1), .names = "{.col}_lag")) %>%
-  ungroup()
-
-data_lagged <- data_lagged %>%
-  dplyr::select(
-    iso3c, year, ends_with("_lag"),
-    disaster_id, disaster_type,
-    total_affected, total_damage, total_deaths, appeal
-  ) %>%
-  filter(!is.na(total_affected))
-
-
-
 # Step 1: Identify numeric columns to lag (excluding target vars)
 num_cols <- names(data)[sapply(data, is.numeric)]
 targets <- c("total_affected", "total_damage", "total_deaths")
@@ -159,6 +144,14 @@ data_lagged <- data %>%
   group_by(iso3c) %>%
   mutate(across(all_of(to_lag), ~ lag(.x, 1), .names = "{.col}_lag")) %>%
   ungroup()
+
+
+data_lagged <- data_lagged %>%
+  dplyr::select(
+    iso3c, year, ends_with("_lag"),
+    disaster_id, disaster_type,
+    total_affected, total_damage, total_deaths, appeal
+  ) 
 
 
 
@@ -179,6 +172,7 @@ write.csv(data_total_deaths, "data_total_deaths.csv", row.names = FALSE)
 write.csv(data_total_damage, "data_total_damage.csv", row.names = FALSE)
 
 
+________________________________ Pre-Model Testing Phase (KNN Impuation) __________________________
 
 # Load necessary libraries
 library(dplyr)
