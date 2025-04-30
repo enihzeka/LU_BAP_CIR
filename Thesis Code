@@ -3,29 +3,28 @@ ________________________________ Data Merging Phase __________________________
 # Load necessary libraries
 library(dplyr)
 library(readr)
-library(stringr)
+library(dplyr)
 
 # Load datasets (update file paths if necessary)
 emdat <- read_csv("EMDATfull.csv")
 world_risk <- read_csv("Worldriskindex2000-2024.csv")
 
-# Standardize column names
+# Standardize column names to lowercase for consistency
 colnames(emdat) <- tolower(colnames(emdat))
 colnames(world_risk) <- tolower(colnames(world_risk))
 
-# Custom color palette (for later plotting)
-custom_colors <- c("#f6765b", "#c7dcff", "#f6e7ff", "#ebffcb", "#d6fffb", "#ffe9d9", "#ffe1fc")
 
-# Inspect and rename EM-DAT columns
+# Check column names before renaming
 print(colnames(emdat))
-emdat <- emdat %>%
-  dplyr::rename(
-    iso3c = iso,
-    year = `start year`,
+
+# Rename relevant EM-DAT columns for clarity (ensure column names exist)
+emdat <- dplyr::rename(emdat,
+    iso3c = iso,                 
+    year = `start year`,         
     total_affected = `total affected`,
-    total_damage = `total damage, adjusted ('000 us$)`,
+    total_damage = `total damage, adjusted ('000 us$)`,  # Ensure this exact column name exists
     aid_received = `ofda/bha response`,
-    appeal = appeal,
+    appeal = `appeal`,
     disaster_type = `disaster type`,
     disaster_group = `disaster subgroup`,
     disaster_id = `disno.`,
@@ -34,65 +33,137 @@ emdat <- emdat %>%
     magnitude_scale = `magnitude scale`
   )
 
+# Print column names again to confirm renaming
 print(colnames(emdat))
 
-# Filter only relevant columns if they exist
+
+# Ensure emdat is a dataframe
+emdat <- as.data.frame(emdat)
+
+# Check column names before selection
+print(colnames(emdat))
+
+# Select only columns that actually exist in emdat
 valid_columns <- c("iso3c", "year", "total_affected", "total_damage", "aid_received",
-                   "appeal", "disaster_type", "disaster_id", "disaster_group",
-                   "magnitude", "total_deaths", "magnitude_scale")
+                   "appeal", "disaster_type", "disaster_id", "disaster_group", "magnitude", "total_deaths", "magnitude_scale", "region", "subregion" )
+
+
 
 emdat <- emdat %>%
-  dplyr::select(all_of(intersect(valid_columns, colnames(emdat))))
+  dplyr::select(all_of(intersect(valid_columns, colnames(emdat)))) 
+
+# Print selected column names
+print(colnames(emdat))
+
+# Now select only the required columns
+emdat <- emdat %>%
+  dplyr::select(iso3c, year, total_affected, total_damage, aid_received,
+                appeal, disaster_type, disaster_id, magnitude, disaster_group, total_deaths, magnitude_scale, region , subregion)
 
 
-# Standardize and convert world_risk values
+# Standardize World Risk Index column names (ensure country-year alignment)
 world_risk <- world_risk %>%
-  dplyr::rename(iso3c = iso3.code) %>%
-  mutate(across(where(is.character), ~ str_replace_all(., ",", "."))) %>%
+  dplyr::rename(
+    iso3c = iso3.code)
+
+world_risk <- world_risk %>%
+  mutate(across(where(is.character), ~ str_replace_all(., ",", "."))) %>%  # replace comma with dot if present
   mutate(across(where(~ all(str_detect(., "^[-+]?[0-9]*\\.?[0-9]+$"), na.rm = TRUE)), as.numeric))
 
 
-# Merge EM-DAT and World Risk data
+# Merge datasets using a left join (keeping all World Risk Index data)
 merged_data <- world_risk %>%
   left_join(emdat, by = c("iso3c", "year"))
 
+
+merged_data <- merged_data %>%
+  mutate(across(where(is.character), ~ str_replace_all(., ",", ".")))
+
+
+merged_data[merged_data == 0.01] <- NA
+
+# Ensure missing values remain as NA
+merged_data[is.na(merged_data)] <- NA
+
+# Print summary of merged dataset
 print(summary(merged_data))
 
-# Load and clean World Bank data
-wb_data <- read_csv("WBData.csv")
+na_counts <- colSums(is.na(merged_data))
+print(na_counts)
+
+merged_data <- merged_data %>%
+  mutate(region_n = as.numeric(factor(region)))
+
+merged_data <- merged_data %>%
+  mutate(subregion_n = as.numeric(factor(subregion)))
+
+
+wb_data <- read_csv("worldb.csv")
+
+print(summary(wb_data))
+
+# Replace ".." with NA in the entire dataset
 wb_data[wb_data == ".."] <- NA
+
+# Rename selected variables and convert them to numeric
+wb_data <- wb_data %>%
+  rename(
+    health = `Current health expenditure (% of GDP) [SH.XPD.CHEX.GD.ZS]`,
+    military    = `Military expenditure (% of GDP) [MS.MIL.XPND.GD.ZS]`,
+    slum   = `Population living in slums (% of urban population) [EN.POP.SLUM.UR.ZS]`,
+    urban         = `Urban population (% of total population) [SP.URB.TOTL.IN.ZS]`,
+    gini    = `Gini index [SI.POV.GINI]`,
+    effectivness      = `Government Effectiveness: Estimate [GE.EST]`,
+    mobile      = `Mobile cellular subscriptions (per 100 people) [IT.CEL.SETS.P2]`,
+    internet      = `Individuals using the Internet (% of population) [IT.NET.USER.ZS]`,
+    education      = `Government expenditure on education, total (% of GDP) [SE.XPD.TOTL.GD.ZS]`,
+    hospital      = `Hospital beds (per 1,000 people) [SH.MED.BEDS.ZS]`,
+    life      = `Life expectancy at birth, total (years) [SP.DYN.LE00.IN]`,
+    gdp      = `GDP per capita, PPP (current international $) [NY.GDP.PCAP.PP.CD]`,
+    education2      = `Compulsory education, duration (years) [SE.COM.DURS]`, 
+    corruption      = `Control of Corruption: Estimate [CC.EST]`
+  ) %>%
+  mutate(across(c(health, military, slum, urban, gini, effectivness, mobile, internet, education, education2, hospital, life, gdp, corruption), as.numeric))
+
 
 colnames(wb_data) <- tolower(colnames(wb_data))
 
+# Standardize WBData column names for consistency
 wb_data <- wb_data %>%
-  dplyr::rename(
-    electricity = `access to electricity (% of population) [eg.elc.accs.zs]`,
-    military    = `military expenditure (% of gdp) [ms.mil.xpnd.gd.zs]`,
-    urban_pop   = `urban population (% of total population) [sp.urb.totl.in.zs]`,
-    r_d         = `firms that spend on r&d (% of firms) [ic.frm.rsdv.zs]`,
-    internet    = `individuals using the internet (% of population) [it.net.user.zs]`,
-    mobile      = `mobile cellular subscriptions (per 100 people) [it.cel.sets.p2]`
-  ) %>%
-  mutate(across(c(electricity, military, urban_pop, r_d, internet, mobile), as.numeric)) %>%
-  dplyr::rename(
+  rename(
     iso3c = `country code`,
     year = time
   )
+print(summary(wb_data))
 
+# Ensure WBData is a dataframe
+wb_data <- as.data.frame(wb_data)
 
+print(summary(wb_data))
+
+# Ensure 'year' is numeric in both datasets before merging
 wb_data <- wb_data %>%
   mutate(year = as.numeric(year))
 
-# Merge all data
+# Merge with WBData (left join)
 merged_data <- merged_data %>%
   left_join(wb_data, by = c("iso3c", "year"))
 
+# Ensure missing values remain as NA
+merged_data[is.na(merged_data)] <- NA
+
+# Print summary of final merged dataset
 print(summary(merged_data))
 
-# Export final dataset
-write_csv(merged_data, "merged_emdat_worldrisk_wbdata.csv")
+na_counts <- colSums(is.na(merged_data))
+print(na_counts)
 
-data <- read_csv("merged_emdat_worldrisk_wbdata.csv")
+
+# Optional: Check remaining variables
+print(names(merged_data))
+
+# Save the final merged dataset
+write_csv(merged_data, "merged_emdat_worldrisk_wbdata.csv")
 
 ________________________________ Data Cleaning and Preperation  __________________________
 
@@ -105,11 +176,26 @@ library(randomForest)
 # Load the merged dataset
 data <- read_csv("merged_emdat_worldrisk_wbdata.csv")
 
+
+data <- data %>%
+  mutate(
+    corruption_scaled = (corruption - min(corruption, na.rm = TRUE)) /
+      (max(corruption, na.rm = TRUE) - min(corruption, na.rm = TRUE)),
+    
+    effectiveness_scaled = (effectivness - min(effectivness, na.rm = TRUE)) /
+      (max(effectivness, na.rm = TRUE) - min(effectivness, na.rm = TRUE))
+  )
+
+
 data <- data %>%
   dplyr::rename(
     dis_typ = disaster_type,
     disaster_type = disaster_group
   )
+
+library(fastDummies)
+
+data <- dummy_cols(data, select_columns = "disaster_type", remove_first_dummy = TRUE)
 
 
 # Convert back to factor if needed
@@ -126,16 +212,32 @@ data <- data %>%
   mutate(across(where(is.character), ~ str_replace_all(., ",", "."))) %>%  # Replace commas with dots
   mutate(across(where(~ all(str_detect(., "^[-+]?[0-9]*\\.?[0-9]+$"), na.rm = TRUE)), as.numeric))  # Convert valid numerics to numbers
 
-data <- data %>%
-  mutate(across(where(is.character), ~ as.numeric(str_replace_all(., ",", "."))))
+
+summary(data)
+data.frame(Variable = names(data), NAs = colSums(is.na(data)))
+
+# Exclude specific variables
+data <- data[, !(names(data) %in% c("si_14a", "disaster_type_Extra.terrestrial", "r_d", "slum", "fixed telephone subscriptions (per 100 people) [it.mlt.main.p2]", "military" ))]
+
+# Save the cleaned dataset to a CSV file
+write.csv(data, "cleaned_data.csv", row.names = FALSE)
+
+# Read the CSV back into R and overwrite 'data'
+data <- read.csv("cleaned_data.csv")
+
+# Dataset done 
+
 
 
 col_info <- data.frame(Column_Number = seq_along(names(data)), Column_Name = names(data))
 print(col_info)
 
+
+print(summary(data))
+
 # Step 1: Identify numeric columns to lag (excluding target vars)
 num_cols <- names(data)[sapply(data, is.numeric)]
-targets <- c("total_affected", "total_damage", "total_deaths")
+targets <- c("total_affected", "total_damage", "total_deaths", "disaster_type_Geophysical", "disaster_type_Hydrological", "disaster_type_Meteorological", "disaster_type_NA", "subregion_n", "region_n", "region", "subregion")
 to_lag <- setdiff(num_cols, targets)
 
 # Step 2: Lag them by country
@@ -145,12 +247,11 @@ data_lagged <- data %>%
   mutate(across(all_of(to_lag), ~ lag(.x, 1), .names = "{.col}_lag")) %>%
   ungroup()
 
-
 data_lagged <- data_lagged %>%
   dplyr::select(
     iso3c, year, ends_with("_lag"),
     disaster_id, disaster_type,
-    total_affected, total_damage, total_deaths, appeal
+    total_affected, total_damage, total_deaths, appeal, dis_typ
   ) 
 
 
@@ -170,6 +271,13 @@ print(dim(data_total_damage))
 # Optionally, save them as new datasets
 write.csv(data_total_deaths, "data_total_deaths.csv", row.names = FALSE)
 write.csv(data_total_damage, "data_total_damage.csv", row.names = FALSE)
+
+data.frame(Variable = names(data_total_deaths), NAs = colSums(is.na(data_total_deaths)))
+
+
+
+
+
 
 
 ________________________________ Pre-Model Testing Phase (KNN Impuation) __________________________
