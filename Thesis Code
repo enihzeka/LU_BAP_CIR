@@ -1,3 +1,7 @@
+This is the R code which serves as the basis for the Bachelor thesis : Governance in the Storm, Forecasting Disaster Casualties and Costs by Nick Bornemann (Leiden University) 
+
+
+
 ________________________________ Data Merging Phase __________________________
 
 # Load necessary libraries
@@ -276,249 +280,888 @@ data.frame(Variable = names(data_total_deaths), NAs = colSums(is.na(data_total_d
 
 
 
+# Read the dataset
+data_total_deaths <- read.csv("data_total_deaths.csv")
+
+
+
+qqnorm(data_total_deaths$total_deaths,
+       main = "Q-Q Plot of Total Deaths")
+qqline(data_total_deaths$total_deaths, col = "red")
+
+plot(density(data_total_deaths$total_deaths, na.rm = TRUE),
+     main = "Density Plot of Total Deaths",
+     xlab = "Total Deaths")
+
+# Step 1: KEEP everything (including 0 deaths!)
+# No filtering for deaths >= 10 anymore
+filtered_deaths <- data_total_deaths  # <-- keep the full dataset
+
+# Step 2: Calculate the 90th percentile to trim top 10% (optional)
+upper_bound_deaths <- quantile(filtered_deaths$total_deaths, 0.95, na.rm = TRUE)
+
+# Step 3: Exclude top 10% of deaths (only the extreme high values)
+data_total_deaths_trimmed <- filtered_deaths %>%
+  filter(total_deaths <= upper_bound_deaths)
+
+# Step 4: Plots for trimmed data
+
+# Q-Q plot
+qqnorm(data_total_deaths_trimmed$total_deaths,
+       main = "Q-Q Plot of Total Deaths (Trimmed)")
+qqline(data_total_deaths_trimmed$total_deaths, col = "red")
+
+# Density plot
+plot(density(data_total_deaths_trimmed$total_deaths, na.rm = TRUE),
+     main = "Density Plot of Total Deaths (Trimmed)",
+     xlab = "Total Deaths")
+
+
+
+# Min-Max scaling function
+min_max_scale <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+
+# Apply scaling
+data_total_deaths_trimmed[cols_to_scale] <- lapply(data_total_deaths_trimmed[cols_to_scale], min_max_scale)
+
+# Check the result
+summary(data_total_deaths_trimmed)
+
+# Step 3: Apply Min-Max scaling to the log-transformed variable
+data_total_deaths_10$log_total_deaths_scaled <- min_max_scale(data_total_deaths_10$log_total_deaths)
+
+
+# Identify _lag variables
+lag_vars <- grep("_lag$", names(data_total_deaths_10), value = TRUE)
+
+
+# Save the imputed dataset
+write.csv(data_total_deaths_trimmed, "data_total_deaths_imputed.csv", row.names = FALSE)
+
+data_total_deaths_imputed <- read.csv("data_total_deaths_imputed.csv")
+
+##### Done with total deaths ! 
 
 
 
 
-________________________________ Pre-Model Testing Phase (KNN Impuation) __________________________
-
-# Load necessary libraries
-library(dplyr)
-library(VIM)  # For kNN imputation
 
 
-# Step 2: Ensure disaster_type is a factor and convert to numeric
-death_run$disaster_type <- as.numeric(as.factor(death_run$disaster_type))
+# Read the dataset
+data_total_damage <- read.csv("data_total_damage.csv")
 
-death_run_1 <- subset(death_run, disaster_type == 1)
-death_run_2 <- subset(death_run, disaster_type == 2)
-death_run_3 <- subset(death_run, disaster_type == 3)
-death_run_4 <- subset(death_run, disaster_type == 4)
+# Step 1: Filter values greater than 50,000
+filtered_data <- data_total_damage[data_total_damage$total_damage > 50000, ]
+
+# Step 2: Calculate the 90th percentile of total_damage
+upper_bound <- quantile(filtered_data$total_damage, 0.95, na.rm = TRUE)
+
+# Step 3: Exclude values above the 99th percentile
+data_total_damage_50 <- filtered_data[filtered_data$total_damage <= upper_bound, ]
+
+qqnorm(data_total_damage_50$total_damage)
+qqline(data_total_damage_50$total_damage, col = "red")
+
+plot(density(data_total_damage_50$total_damage, na.rm = TRUE),
+     main = "Density Plot of Total Damage (Filtered)",
+     xlab = "Total Damage")
+
+# Step 1: Log-transform total_damage (safely)
+data_total_damage_50$log_total_damage <- log1p(data_total_damage_50$total_damage)
+
+plot(density(data_total_damage_50$total_damage, na.rm = TRUE),
+     main = "Density Plot of Total Damage (Filtered)",
+     xlab = "Total Damage")
+
+# Step 2: Reuse the same Min-Max scaling function
+min_max_scale <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+
+# Step 3: Apply Min-Max scaling to the log-transformed variable
+data_total_damage_50$log_total_damage_scaled <- min_max_scale(data_total_damage_50$log_total_damage)
+
+
+######### Death Model '#############
+
 
 
 library(caret)
-library(randomForest)
+death_run <- read.csv("data_total_deaths_imputed.csv")
 
-# Define variables to select
-selected_vars <- c("ai_01a_lag", "ai_02a_lag", "ai_02b_lag",
-                   "ci_01b_lag", "ci_03a_lag", "ci_03b_lag", "ci_04a_lag", "ci_04b_lag",
-                   "ci_06a_lag", "ci_06b_lag", "s_05_lag", "si_01a_lag", "si_02a_lag",
-                   "si_02b_lag", "si_03a_lag", "si_05a_lag", "si_06a_lag", "si_07b_lag",
-                   "si_08a_lag", "si_09a_lag", "military_lag", "urban_pop_lag", "electricity_lag")
 
-# Evaluation function
-evaluate_model <- function(actual, predicted) {
+# Calculate min and max
+min_val <- min(death_run$total_deaths, na.rm = TRUE)
+max_val <- max(death_run$total_deaths, na.rm = TRUE)
+
+# Min-Max scale to [0, 1]
+death_run <- death_run %>%
+  mutate(total_deaths_scaled = (total_deaths - min_val) / (max_val - min_val))
+
+# Check the result
+summary(death_run$total_deaths_scaled)
+
+# Split scaled total_deaths into 3 groups: Low (0-0.33], Medium (0.33-0.66], High (0.66-1]
+death_run$deaths_group <- cut(
+  death_run$total_deaths_scaled,
+  breaks = c(-Inf, 1/4, 2/4, Inf),
+  labels = c("Low", "Medium", "High"),
+  right = TRUE
+)
+
+# Check the distribution
+table(death_run$deaths_group)
+
+
+library(ggplot2)
+
+# Make sure deaths_group is a factor (for nice ordering)
+death_run$deaths_group <- factor(death_run$deaths_group, levels = c("Low", "Medium", "High"))
+
+# Plot
+ggplot(death_run, aes(x = total_deaths)) +
+  geom_histogram(bins = 30, fill = "#c7dcff", color = "black") +
+  facet_wrap(~ deaths_group, scales = "free_y") +
+  labs(
+    title = "Distribution of Scaled Total Deaths by Group",
+    x = "Scaled Total Deaths (0-1)",
+    y = "Count"
+  ) +
+  theme_minimal(base_family = "Times", base_size = 12) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+
+
+
+library(dplyr)
+library(caret)
+library(ggplot2)
+
+#─── 1. Selected predictors ───────────────────────────────────────────────────
+selected_vars_death <- c("ai_01a_lag", "ai_02a_lag", "ai_02b_lag",
+                   "ci_03a_lag", "ci_03b_lag", "ci_04a_lag", "ci_04b_lag",
+                   "ci_06a_lag", "s_05_lag", "si_01a_lag", "si_02a_lag",
+                   "si_02b_lag", "si_03a_lag", "si_05a_lag", "si_07b_lag",
+                   "si_08a_lag", "si_09a_lag", "internet_lag", "gdp_lag", "life_lag","corruption_lag", 
+                   "health_lag", "hospital_lag", "urban_lag", "ai_03c_lag", "exposure_lag")
+
+data_death_clean <- death_run %>% 
+  dplyr::select(all_of(c(selected_vars, "deaths_group", "total_deaths"))) %>% 
+  na.omit()
+
+#─── 2. Subset clean data by deaths group ──────────────────────────────────────
+data_death_clean$deaths_group <- as.numeric(as.factor(data_death_clean$deaths_group))
+
+# Now subset based on deaths_group
+death_group_1 <- subset(data_death_clean, deaths_group == 1) # Low
+death_group_2 <- subset(data_death_clean, deaths_group == 2) # Medium
+death_group_3 <- subset(data_death_clean, deaths_group == 3) # High
+
+subsets_death <- list(
+  Low = death_group_1,
+  Medium = death_group_2,
+  High = death_group_3
+)
+
+#─── 3. Evaluation helper ──────────────────────────────────────────────────────
+evaluate_model_death <- function(actual, predicted) {
   r_squared <- cor(actual, predicted, use = "complete.obs")^2
   rmse <- sqrt(mean((actual - predicted)^2))
   return(c(R2 = round(r_squared, 3), RMSE = round(rmse, 3)))
 }
 
-# Pipeline function
-run_model_pipeline <- function(df, name = "Dataset") {
-  # Ensure numeric conversion
-  df[selected_vars] <- lapply(df[selected_vars], as.numeric)
+#─── 4. Model pipeline ─────────────────────────────────────────────────────────
+run_model_pipeline_death <- function(df, name = "Dataset") {
+  if (nrow(df) < 10) {
+    warning(paste("Skipping", name, "- not enough data"))
+    return(data.frame(
+      DeathGroup = name,
+      Model = c("OLS", "kNN", "RF", "GBM"),
+      RMSE = NA,
+      R2 = NA,
+      N_train = NA,
+      N_test = NA
+    ))
+  }
   
-  # Train-test split
+  df[selected_vars_death] <- lapply(df[selected_vars_death], as.numeric)
+  
   set.seed(123)
-  splitIndex <- createDataPartition(df$log_total_deaths, p = 0.7, list = FALSE)
-  train_data <- df[splitIndex, ]
-  test_data <- df[-splitIndex, ]
+  idx <- createDataPartition(df$total_deaths, p = 0.7, list = FALSE)
+  train_data <- df[idx, ]
+  test_data <- df[-idx, ]
+  form <- as.formula(paste("total_deaths ~", paste(selected_vars_death, collapse = " + ")))
+  ctrl <- trainControl(method = "cv", number = 5)
   
-  # Model formula
-  model_formula <- as.formula(paste("log_total_deaths ~", paste(selected_vars, collapse = " + ")))
-  
-  # OLS
-  ols_model <- lm(model_formula, data = train_data)
-  ols_predictions <- predict(ols_model, newdata = test_data)
-  
-  # kNN
-  set.seed(123)
-  knn_model <- train(model_formula, data = train_data, method = "knn", tuneLength = 10)
-  knn_predictions <- predict(knn_model, newdata = test_data)
-  
-  # Random Forest
-  set.seed(123)
-  rf_model <- train(model_formula, data = train_data, method = "rf",
-                    trControl = trainControl(method = "cv", number = 5),
-                    tuneLength = 5, importance = TRUE)
-  rf_predictions <- predict(rf_model, newdata = test_data)
-  
-  # Evaluation
-  ols_results <- evaluate_model(test_data$total_deaths, ols_predictions)
-  knn_results <- evaluate_model(test_data$total_deaths, knn_predictions)
-  rf_results <- evaluate_model(test_data$total_deaths, rf_predictions)
-  
-  # Output
-  cat("\nModel Performance for", name, "\n")
-  cat(sprintf("OLS - R²: %.3f | RMSE: %.3f\n", ols_results["R2"], ols_results["RMSE"]))
-  cat(sprintf("kNN - R²: %.3f | RMSE: %.3f\n", knn_results["R2"], knn_results["RMSE"]))
-  cat(sprintf("RF  - R²: %.3f | RMSE: %.3f\n", rf_results["R2"], rf_results["RMSE"]))
+  tryCatch({
+    # Models
+    ols_mod <- lm(form, data = train_data)
+    ols_pred <- predict(ols_mod, newdata = test_data)
+    ols_res <- evaluate_model_death(test_data$total_deaths, ols_pred)
+    
+    knn_mod <- caret::train(form, data = train_data, method = "knn", tuneLength = 10)
+    knn_pred <- predict(knn_mod, newdata = test_data)
+    knn_res <- evaluate_model_death(test_data$total_deaths, knn_pred)
+    
+    rf_mod <- caret::train(form, data = train_data, method = "rf", trControl = ctrl, tuneLength = 5)
+    rf_pred <- predict(rf_mod, newdata = test_data)
+    rf_res <- evaluate_model_death(test_data$total_deaths, rf_pred)
+    
+    gbm_mod <- caret::train(form, data = train_data, method = "gbm", trControl = ctrl, tuneLength = 5, verbose = FALSE)
+    gbm_pred <- predict(gbm_mod, newdata = test_data)
+    gbm_res <- evaluate_model_death(test_data$total_deaths, gbm_pred)
+    
+    # Print results
+    cat("\nModel Performance for", name, "\n")
+    cat(sprintf("N_train: %d | N_test: %d\n", nrow(train_data), nrow(test_data)))
+    cat(sprintf("OLS - R²: %.3f | RMSE: %.3f\n", ols_res["R2"], ols_res["RMSE"]))
+    cat(sprintf("kNN - R²: %.3f | RMSE: %.3f\n", knn_res["R2"], knn_res["RMSE"]))
+    cat(sprintf("RF  - R²: %.3f | RMSE: %.3f\n", rf_res["R2"], rf_res["RMSE"]))
+    cat(sprintf("GBM - R²: %.3f | RMSE: %.3f\n", gbm_res["R2"], gbm_res["RMSE"]))
+    
+    data.frame(
+      DeathGroup = name,
+      Model = c("OLS", "kNN", "RF", "GBM"),
+      RMSE = c(ols_res["RMSE"], knn_res["RMSE"], rf_res["RMSE"], gbm_res["RMSE"]),
+      R2 = c(ols_res["R2"], knn_res["R2"], rf_res["R2"], gbm_res["R2"]),
+      N_train = nrow(train_data),
+      N_test = nrow(test_data)
+    )
+  }, error = function(e) {
+    warning(paste("Model failed for", name, ":", e$message))
+    data.frame(
+      DeathGroup = name,
+      Model = c("OLS", "kNN", "RF", "GBM"),
+      RMSE = NA,
+      R2 = NA,
+      N_train = NA,
+      N_test = NA
+    )
+  })
 }
 
-# Run for each dataset
-run_model_pipeline(death_run_1, "death_run_1")
-run_model_pipeline(death_run_2, "death_run_2")
-run_model_pipeline(death_run_3, "death_run_3")
-run_model_pipeline(death_run_4, "death_run_4")
+rmse_list_death <- lapply(names(subsets_death), function(group) {
+  run_model_pipeline_death(subsets_death[[group]], paste0("death_group_", group))
+})
+rmse_df_death <- do.call(rbind, rmse_list_death)
+
+
+library(caret)
+
+# Train the kNN model
+knn_mod <- caret::train(
+  form_death,
+  data = train_death,
+  method = "knn",
+  tuneLength = 10  # tries 10 values of k
+)
+
+# Check best k
+knn_mod$bestTune
+
+
+
+library(caret)
+
+# Cross-validation control
+ctrl <- trainControl(method = "cv", number = 5)
+
+# Grid of mtry values to try
+rf_grid <- expand.grid(mtry = c(5, 10, 15))
+
+# Train Random Forest model
+rf_mod <- caret::train(
+  form_death,
+  data = train_death,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  importance = TRUE
+)
+
+# View the best mtry value
+rf_mod$bestTune
+
+# Print directly
+cat("Best mtry for Random Forest:", rf_mod$bestTune$mtry, "\n")
+
+
+
+#─── 6. Plot RMSEs ─────────────────────────────────────────────────────────────
+ggplot(rmse_df_death, aes(x = Model, y = RMSE, color = Model)) +
+  geom_point(size = 4) +
+  facet_wrap(~ DeathGroup) +
+  labs(
+    title = "Model RMSEs by Death Group (Death Data)",
+    x = "Model",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+
+# Ensure correct order and naming of DeathGroup
+rmse_df_death$DeathGroup <- factor(
+  rmse_df_death$DeathGroup,
+  levels = c("death_group_Low", "death_group_Medium", "death_group_High"),
+  labels = c("Low", "Medium", "High")
+)
+
+# Plot R² vs RMSE
+ggplot(rmse_df_death, aes(x = R2, y = RMSE,color = Model)) +
+  geom_point(size = 5) + 
+  facet_wrap(~ DeathGroup, nrow = 1) +
+  labs(
+    title = "Model Performance: R² vs RMSE by Death Group",
+    x = "R²",
+    y = "RMSE"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    strip.text = element_text(face = "bold")
+  )
+
+
+library(ggplot2)
+library(ggrepel)
+
+ggplot(rmse_df_death, aes(x = R2, y = RMSE, color = Model, shape = Model)) +
+  geom_point(size = 5) +
+  geom_text_repel(aes(label = Model), size = 3, color = "gray30") +
+  scale_shape_manual(values = c(16, 17, 15, 18)) +
+  scale_color_manual(
+    values = c(
+      "OLS" = "#f6765b",
+      "kNN" = "#c7dcff",
+      "RF"  = "#FABD05",
+      "GBM" = "#ffe1fc"
+    )
+  ) +
+  facet_wrap(~ DeathGroup, nrow = 1) +
+  labs(
+    title = "Model Performance: R² vs RMSE by Death Group",
+    x = "R² (Higher is Better)",
+    y = "RMSE (Lower is Better)"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+
+######done for the first part 1/3 split####
+
+library(caret)
+
+#──────────────────────────────────────────────────────────────────────────────
+# 1. Prep Full Data
+#──────────────────────────────────────────────────────────────────────────────
+set.seed(42)
+df_death <- data_death_clean
+df_death[selected_vars_death] <- lapply(df_death[selected_vars_death], as.numeric)
+
+# Train/test split
+idx_death <- createDataPartition(df_death$total_deaths, p = 0.7, list = FALSE)
+train_death <- df_death[idx_death, ]
+test_death <- df_death[-idx_death, ]
+
+form_death <- as.formula(paste("total_deaths ~", paste(selected_vars_death, collapse = " + ")))
+
+#──────────────────────────────────────────────────────────────────────────────
+# 2. Train Hyperparameter-Tuned RF Model
+#──────────────────────────────────────────────────────────────────────────────
+rf_grid <- expand.grid(mtry = c(5, 10, 15))
+ctrl <- trainControl(method = "cv", number = 5)
+
+rf_death <- caret::train(
+  form_death,
+  data = train_death,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  importance = TRUE
+)
+
+# Predict & evaluate
+rf_pred_death <- predict(rf_death, newdata = test_death)
+evaluate_model <- function(actual, predicted) {
+  r_squared <- cor(actual, predicted, use = "complete.obs")^2
+  rmse <- sqrt(mean((actual - predicted)^2))
+  return(c(R2 = round(r_squared, 3), RMSE = round(rmse, 3)))
+}
+eval_death <- evaluate_model(test_death$total_deaths, rf_pred_death)
+print(eval_death)
+
+
+comparison_df <- data.frame(
+  Actual = test_death$total_deaths,
+  Predicted = rf_pred_death
+)
+
+ggplot(comparison_df, aes(x = Actual, y = Predicted)) +
+  geom_point(shape = 21, fill = "#c7dcff", color = "gray40", stroke = 0.5, alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", color = "#EA4336", se = FALSE, linetype = "dashed") +
+  geom_abline(slope = 1, intercept = 0, color = "gray50", linetype = "dotted") +
+  labs(
+    title = "Predicted vs Actual Total Deaths",
+    x = "Actual (total deaths)",
+    y = "Predicted (total deaths)"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+
+rf_imp_death <- varImp(rf_death, scale = TRUE)
+rf_imp_df <- rf_imp_death$importance %>%
+  rownames_to_column("Variable") %>%
+  arrange(desc(Overall))
+
+ggplot(rf_imp_df, aes(x = reorder(Variable, Overall), y = Overall, fill = Overall)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = round(Overall, 2)), hjust = -0.2, size = 3.5, color = "gray20") +
+  scale_fill_gradient(low = "#FABD05", high = "#EA4336") +
+  coord_flip() +
+  labs(
+    title = "Random Forest Variable Importance (Death Model)",
+    x = "",
+    y = "Scaled Importance"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 10)
+  ) +
+  ylim(0, max(rf_imp_df$Overall) * 1.15)
+
+
+library(iml)
+
+X_death <- train_death[, selected_vars_death]
+y_death <- train_death$total_deaths
+predictor_death <- Predictor$new(rf_death, data = X_death, y = y_death)
+
+shap_death <- FeatureImp$new(predictor_death, loss = "mae")
+
+
+
+# SHAP: recompute for a small sample
+library(iml)
+library(dplyr)
+library(ggplot2)
+
+# Sample (e.g. 100 observations)
+X_sample <- X_death[1:100, ]
+shapley_list <- lapply(1:nrow(X_sample), function(i) {
+  Shapley$new(predictor_death, x.interest = X_sample[i, ])$results %>%
+    mutate(instance = i)
+})
+shap_long <- do.call(rbind, shapley_list)
+
+# Violin Plot
+ggplot(shap_long, aes(x = phi, y = feature, fill = feature)) +
+  geom_violin(trim = FALSE, scale = "width", color = NA, alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "gray50") +
+  labs(
+    title = "SHAP Value Distribution per Feature (Death Model)",
+    x = "SHAP Value (Impact on Prediction)",
+    y = NULL
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 9)
+  ) +
+  scale_fill_manual(values = rep(c("#f6765b", "#c7dcff", "#FABD05", "#ffe1fc"), length.out = length(unique(shap_long$feature))))
+
+
+
+######## Cost Model ############
 
 
 # Load libraries
-library(ggplot2)
 library(dplyr)
+library(ggplot2)
+library(caret)
 
-# Set Times New Roman globally (Windows/macOS only if font is installed)
-theme_set(theme_minimal(base_family = "Times New Roman"))
+# Load dataset
+data_cost <- read.csv("data_total_damage_imputed.csv")
 
-# Ensure disaster_type is numeric
-death_run$disaster_type <- as.numeric(as.factor(death_run$disaster_type))
+#─── 1. Scale log_total_damage ────────────────────────────────────────────────
 
-# Define labels and colors
-disaster_labels <- c("Climatological", "Geophysical", "Hydrological", "Meteorological")
-type_colors <- c("#ebffcb", "#ffe9d9", "#d6fffb", "#ffe1fc")
+# Calculate min and max
+min_val <- min(data_cost$log_total_damage, na.rm = TRUE)
+max_val <- max(data_cost$log_total_damage, na.rm = TRUE)
 
-# Create labeled factor
-death_run$disaster_type <- factor(death_run$disaster_type,
-                                  levels = 1:4,
-                                  labels = disaster_labels)
+# Min-Max scale to [0, 1]
+data_cost <- data_cost %>%
+  mutate(log_total_damage_scaled = (log_total_damage - min_val) / (max_val - min_val))
 
-# Count frequency (using dplyr correctly)
-disaster_freq <- dplyr::count(death_run, disaster_type)
+# Check the result
+summary(data_cost$log_total_damage_scaled)
 
-# Create plot
-ggplot(disaster_freq, aes(x = disaster_type, y = n, fill = disaster_type)) +
-  geom_col(color = "black", width = 0.7) +
-  scale_fill_manual(values = type_colors) +
+#─── 2. Categorize into groups ─────────────────────────────────────────────────
+
+# Split scaled log_total_damage into 3 groups: Low, Medium, High
+data_cost$damage_group <- cut(
+  data_cost$log_total_damage_scaled,
+  breaks = c(-Inf, 1/3, 2/3, Inf),
+  labels = c("Low", "Medium", "High"),
+  right = TRUE
+)
+
+# Check group distribution
+table(data_cost$damage_group)
+
+#─── 3. Plot histogram by group ────────────────────────────────────────────────
+
+# Ensure factor levels are in order
+data_cost$damage_group <- factor(data_cost$damage_group, levels = c("Low", "Medium", "High"))
+
+ggplot(data_cost, aes(x = log_total_damage_scaled)) +
+  geom_histogram(bins = 30, fill = "#f6e7ff", color = "black") +
+  facet_wrap(~ damage_group, scales = "free_y") +
   labs(
-    title = "Disaster Frequency in death_run Dataset",
-    x = "Disaster Type",
-    y = "Frequency",
-    fill = "Disaster Type"
+    title = "Distribution of Scaled Log Total Damage by Group",
+    x = "Log Total Damage",
+    y = "Count"
   ) +
-  theme_minimal(base_family = "Times New Roman") +
+  theme_minimal(base_family = "Times", base_size = 12) +
   theme(
-    text = element_text(size = 14),
-    plot.title = element_text(hjust = 0.5, face = "bold"),
-    legend.position = "none",
-    panel.grid.major.y = element_line(color = "gray80"),
-    panel.grid.minor = element_blank()
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
   )
 
+#─── 4. Select predictors and clean ────────────────────────────────────────────
 
-# Step 1: Ensure disaster_type is numeric based on factor levels
-data_cost$disaster_type <- as.numeric(as.factor(data_cost$disaster_type))
-
-# Step 2: Subset by disaster_type values
-data_cost_1 <- subset(data_cost, disaster_type == 1)
-data_cost_2 <- subset(data_cost, disaster_type == 2)
-data_cost_3 <- subset(data_cost, disaster_type == 3)
-data_cost_4 <- subset(data_cost, disaster_type == 4)
-
-# Step 3: Load necessary libraries
-library(caret)
-library(randomForest)
-
-# Step 4: Define variables to select
 selected_vars <- c("ai_01a_lag", "ai_02a_lag", "ai_02b_lag",
-                   "ci_01b_lag", "ci_03a_lag", "ci_03b_lag", "ci_04a_lag", "ci_04b_lag",
-                   "ci_06a_lag", "ci_06b_lag", "s_05_lag", "si_01a_lag", "si_02a_lag",
-                   "si_02b_lag", "si_03a_lag", "si_05a_lag", "si_06a_lag", "si_07b_lag",
-                   "si_08a_lag", "si_09a_lag", "military_lag", "urban_pop_lag", "electricity_lag")
+                   "ci_03a_lag", "ci_03b_lag", "ci_04a_lag", "ci_04b_lag",
+                   "ci_06a_lag", "s_05_lag", "si_01a_lag", "si_02a_lag",
+                   "si_02b_lag", "si_03a_lag", "si_05a_lag", "si_07b_lag",
+                   "si_08a_lag", "si_09a_lag", "internet_lag", "gdp_lag", "life_lag","corruption_lag", 
+                   "health_lag", "hospital_lag", "urban_lag", "ai_03c_lag", "exposure_lag")
 
-# Step 5: Define evaluation function
+data_cost_clean <- data_cost %>% 
+  dplyr::select(all_of(c(selected_vars, "damage_group", "log_total_damage"))) %>% 
+  na.omit()
+
+# Convert factor to numeric
+data_cost_clean$damage_group <- as.numeric(as.factor(data_cost_clean$damage_group))
+
+#─── 5. Create subsets ─────────────────────────────────────────────────────────
+
+damage_group_1 <- subset(data_cost_clean, damage_group == 1) # Low
+damage_group_2 <- subset(data_cost_clean, damage_group == 2) # Medium
+damage_group_3 <- subset(data_cost_clean, damage_group == 3) # High
+
+subsets_cost <- list(
+  Low = damage_group_1,
+  Medium = damage_group_2,
+  High = damage_group_3
+)
+
+
+#─── 5. Evaluation helper ──────────────────────────────────────────────────────
 evaluate_model <- function(actual, predicted) {
   r_squared <- cor(actual, predicted, use = "complete.obs")^2
   rmse <- sqrt(mean((actual - predicted)^2))
   return(c(R2 = round(r_squared, 3), RMSE = round(rmse, 3)))
 }
 
-# Step 6: Define full model pipeline (predicting total_damage)
+#─── 6. Model pipeline ─────────────────────────────────────────────────────────
 run_model_pipeline <- function(df, name = "Dataset") {
-  # Ensure numeric conversion
+  if (nrow(df) < 10) {
+    warning(paste("Skipping", name, "- not enough data"))
+    return(data.frame(
+      DamageGroup = name,
+      Model = c("OLS", "kNN", "RF", "GBM"),
+      RMSE = NA,
+      R2 = NA,
+      N_train = NA,
+      N_test = NA
+    ))
+  }
+  
   df[selected_vars] <- lapply(df[selected_vars], as.numeric)
   
-  # Train-test split
   set.seed(123)
-  splitIndex <- createDataPartition(df$total_damage, p = 0.7, list = FALSE)
-  train_data <- df[splitIndex, ]
-  test_data <- df[-splitIndex, ]
+  idx <- createDataPartition(df$log_total_damage, p = 0.7, list = FALSE)
+  train_data <- df[idx, ]
+  test_data <- df[-idx, ]
+  form <- as.formula(paste("log_total_damage ~", paste(selected_vars, collapse = " + ")))
+  ctrl <- trainControl(method = "cv", number = 5)
   
-  # Model formula
-  model_formula <- as.formula(paste("total_damage ~", paste(selected_vars, collapse = " + ")))
-  
-  # OLS
-  ols_model <- lm(model_formula, data = train_data)
-  ols_predictions <- predict(ols_model, newdata = test_data)
-  
-  # kNN
-  set.seed(123)
-  knn_model <- train(model_formula, data = train_data, method = "knn", tuneLength = 10)
-  knn_predictions <- predict(knn_model, newdata = test_data)
-  
-  # Random Forest
-  set.seed(123)
-  rf_model <- train(model_formula, data = train_data, method = "rf",
-                    trControl = trainControl(method = "cv", number = 5),
-                    tuneLength = 5, importance = TRUE)
-  rf_predictions <- predict(rf_model, newdata = test_data)
-  
-  # Evaluation
-  ols_results <- evaluate_model(test_data$total_damage, ols_predictions)
-  knn_results <- evaluate_model(test_data$total_damage, knn_predictions)
-  rf_results <- evaluate_model(test_data$total_damage, rf_predictions)
-  
-  # Output
-  cat("\nModel Performance for", name, "\n")
-  cat(sprintf("OLS - R²: %.3f | RMSE: %.3f\n", ols_results["R2"], ols_results["RMSE"]))
-  cat(sprintf("kNN - R²: %.3f | RMSE: %.3f\n", knn_results["R2"], knn_results["RMSE"]))
-  cat(sprintf("RF  - R²: %.3f | RMSE: %.3f\n", rf_results["R2"], rf_results["RMSE"]))
+  tryCatch({
+    # Models
+    ols_mod <- lm(form, data = train_data)
+    ols_pred <- predict(ols_mod, newdata = test_data)
+    ols_res <- evaluate_model(test_data$log_total_damage, ols_pred)
+    
+    knn_mod <- caret::train(form, data = train_data, method = "knn", tuneLength = 10)
+    knn_pred <- predict(knn_mod, newdata = test_data)
+    knn_res <- evaluate_model(test_data$log_total_damage, knn_pred)
+    
+    rf_mod <- caret::train(form, data = train_data, method = "rf", trControl = ctrl, tuneLength = 5)
+    rf_pred <- predict(rf_mod, newdata = test_data)
+    rf_res <- evaluate_model(test_data$log_total_damage, rf_pred)
+    
+    gbm_mod <- caret::train(form, data = train_data, method = "gbm", trControl = ctrl, tuneLength = 5, verbose = FALSE)
+    gbm_pred <- predict(gbm_mod, newdata = test_data)
+    gbm_res <- evaluate_model(test_data$log_total_damage, gbm_pred)
+    
+    # Print results
+    cat("\nModel Performance for", name, "\n")
+    cat(sprintf("N_train: %d | N_test: %d\n", nrow(train_data), nrow(test_data)))
+    cat(sprintf("OLS - R²: %.3f | RMSE: %.3f\n", ols_res["R2"], ols_res["RMSE"]))
+    cat(sprintf("kNN - R²: %.3f | RMSE: %.3f\n", knn_res["R2"], knn_res["RMSE"]))
+    cat(sprintf("RF  - R²: %.3f | RMSE: %.3f\n", rf_res["R2"], rf_res["RMSE"]))
+    cat(sprintf("GBM - R²: %.3f | RMSE: %.3f\n", gbm_res["R2"], gbm_res["RMSE"]))
+    
+    data.frame(
+      DamageGroup = name,
+      Model = c("OLS", "kNN", "RF", "GBM"),
+      RMSE = c(ols_res["RMSE"], knn_res["RMSE"], rf_res["RMSE"], gbm_res["RMSE"]),
+      R2 = c(ols_res["R2"], knn_res["R2"], rf_res["R2"], gbm_res["R2"]),
+      N_train = nrow(train_data),
+      N_test = nrow(test_data)
+    )
+  }, error = function(e) {
+    warning(paste("Model failed for", name, ":", e$message))
+    data.frame(
+      DamageGroup = name,
+      Model = c("OLS", "kNN", "RF", "GBM"),
+      RMSE = NA,
+      R2 = NA,
+      N_train = NA,
+      N_test = NA
+    )
+  })
 }
 
-# Step 7: Run model for each disaster type subset
-run_model_pipeline(data_cost_1, "data_cost_1")
-run_model_pipeline(data_cost_2, "data_cost_2")
-run_model_pipeline(data_cost_3, "data_cost_3")
-run_model_pipeline(data_cost_4, "data_cost_4")
+#─── 7. Collect RMSEs from all subsets ────────────────────────────────────────
+rmse_list_cost <- lapply(names(subsets_cost), function(group) {
+  run_model_pipeline(subsets_cost[[group]], paste0("cost_group_", group))
+})
+rmse_df_cost <- do.call(rbind, rmse_list_cost)
 
 
-# Load libraries (skip if already loaded)
-library(ggplot2)
-library(dplyr)
+# Sort groups as Low → Medium → High
+rmse_df_cost$DamageGroup <- factor(
+  rmse_df_cost$DamageGroup,
+  levels = c("cost_group_Low", "cost_group_Medium", "cost_group_High"),
+  labels = c("Low", "Medium", "High")
+)
 
-# Set Times New Roman theme globally (optional again if already set)
-theme_set(theme_minimal(base_family = "Times New Roman"))
 
-# Ensure disaster_type is numeric and labeled properly
-data_cost$disaster_type <- as.numeric(as.factor(data_cost$disaster_type))
 
-# Define labels and colors
-disaster_labels <- c("Climatological", "Geophysical", "Hydrological", "Meteorological")
-type_colors <- c("#ebffcb", "#ffe9d9", "#d6fffb", "#ffe1fc")
 
-# Recode as factor with labels
-data_cost$disaster_type <- factor(data_cost$disaster_type,
-                                  levels = 1:4,
-                                  labels = disaster_labels)
-
-# Count frequency
-disaster_freq_cost <- dplyr::count(data_cost, disaster_type)
-
-# Create plot
-ggplot(disaster_freq_cost, aes(x = disaster_type, y = n, fill = disaster_type)) +
-  geom_col(color = "black", width = 0.7) +
-  scale_fill_manual(values = type_colors) +
+ggplot(rmse_df_cost, aes(x = R2, y = RMSE, color = Model)) +
+  geom_point(size = 5) +
+  scale_shape_manual(values = c(16, 17, 15, 18)) +
+  facet_wrap(~ DamageGroup, nrow = 1) +
   labs(
-    title = "Disaster Frequency in data_cost Dataset",
-    x = "Disaster Type",
-    y = "Frequency",
-    fill = "Disaster Type"
+    title = "Model Performance: R² vs RMSE by Damage Group",
+    x = "R²",
+    y = "RMSE"
   ) +
-  theme_minimal(base_family = "Times New Roman") +
+  theme_minimal(base_family = "Times") +
   theme(
-    text = element_text(size = 14),
-    plot.title = element_text(hjust = 0.5, face = "bold"),
-    legend.position = "none",
-    panel.grid.major.y = element_line(color = "gray80"),
-    panel.grid.minor = element_blank()
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom"
   )
+
+exp(0.6)  # Example: log-scale RMSE = 0.5
+
+library(ggplot2)
+library(ggrepel)
+
+ggplot(rmse_df_cost, aes(x = R2, y = RMSE, color = Model, shape = Model)) +
+  geom_point(size = 5) +
+  geom_text_repel(aes(label = Model), size = 3, color = "gray30") +
+  scale_shape_manual(values = c(16, 17, 15, 18)) +
+  scale_color_manual(
+    values = c(
+      "OLS" = "#f6765b",
+      "kNN" = "#c7dcff",
+      "RF"  = "#FABD05",
+      "GBM" = "#ffe1fc"
+    )
+  ) +
+  facet_wrap(~ DamageGroup, nrow = 1) +
+  labs(
+    title = "Model Performance: R² vs RMSE by Damage Group",
+    x = "R² (Higher is Better)",
+    y = "RMSE (Lower is Better)"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+
+
+
+#######top haen wir den ersten ##### 
+
+###### Ab hier RF and GBM on the set ### 
+
+#─── 1. Prep Full Data ────────────────────────────────────────────────────────
+set.seed(42)
+df_all <- data_cost_clean
+df_all[selected_vars] <- lapply(df_all[selected_vars], as.numeric)
+
+# Train/test split
+idx_all <- createDataPartition(df_all$log_total_damage, p = 0.7, list = FALSE)
+train_all <- df_all[idx_all, ]
+test_all <- df_all[-idx_all, ]
+
+form <- as.formula(paste("log_total_damage ~", paste(selected_vars, collapse = " + ")))
+
+#─── 2. Hyperparameter-Tuned Random Forest ────────────────────────────────────
+rf_grid <- expand.grid(mtry = c(5, 10, 15))
+ctrl <- trainControl(method = "cv", number = 5)
+
+rf_all <- train(
+  form,
+  data = train_all,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  importance = TRUE
+)
+
+# Evaluation
+rf_pred_all <- predict(rf_all, newdata = test_all)
+eval_all <- evaluate_model(test_all$log_total_damage, rf_pred_all)
+print(eval_all)
+
+library(ggplot2)
+
+# Create dataframe for plotting
+comparison_df <- data.frame(
+  Actual = test_all$log_total_damage,
+  Predicted = rf_pred_all
+)
+
+# Plot
+ggplot(comparison_df, aes(x = Actual, y = Predicted)) +
+  geom_point(shape = 21, fill = "#f6e7ff", color = "gray40", stroke = 0.5, alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", color = "#EA4336", se = FALSE, linetype = "dashed") +
+  geom_abline(slope = 1, intercept = 0, color = "gray50", linetype = "dotted") +
+  labs(
+    title = "Predicted vs Actual Log Total Damage",
+    x = "Actual (log total damage)",
+    y = "Predicted (log total damage)"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+
+library(ggplot2)
+library(scales)
+
+rf_imp_cost <- varImp(rf_all, scale = TRUE)
+rf_imp_cost <- rf_imp_cost$importance %>%
+  rownames_to_column("Variable") %>%
+  arrange(desc(Overall))
+
+# Fancy importance plot
+ggplot(rf_imp_cost, aes(x = reorder(Variable, Overall), y = Overall, fill = Overall)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = round(Overall, 2)), hjust = -0.2, size = 3.5, color = "gray20") +
+  scale_fill_gradient(low = "#FABD05", high = "#EA4336") +
+  coord_flip() +
+  labs(
+    title = "Random Forest Variable Importance (Cost Model)",
+    x = "",
+    y = "Scaled Importance"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 10)
+  ) +
+  ylim(0, max(rf_imp_df$Overall) * 1.15)
+
+
+
+
+library(iml)
+
+# Create predictor object
+X_all <- train_all[, selected_vars]
+y_all <- train_all$log_total_damage
+predictor_all <- Predictor$new(rf_all, data = X_all, y = y_all)
+
+# SHAP-like permutation importance
+shap_all <- FeatureImp$new(predictor_all, loss = "mae")
+
+# Plot
+plot(shap_all) +
+  ggtitle("SHAP-like Feature Importance (Permutation on Full Dataset)") +
+  theme_minimal(base_family = "Times")
+
+
+
+
+
+library(iml)
+library(dplyr)
+library(ggplot2)
+
+# Create predictor object for cost model
+X_cost <- train_all[, selected_vars]
+y_cost <- train_all$log_total_damage
+predictor_cost <- Predictor$new(rf_all, data = X_cost, y = y_cost)
+
+# Sample a subset (to keep Shapley computation practical)
+X_sample_cost <- X_cost[1:100, ]
+shapley_list_cost <- lapply(1:nrow(X_sample_cost), function(i) {
+  Shapley$new(predictor_cost, x.interest = X_sample_cost[i, ])$results %>%
+    mutate(instance = i)
+})
+shap_long_cost <- do.call(rbind, shapley_list_cost)
+
+# Plot: violin distribution (same style as death model)
+ggplot(shap_long_cost, aes(x = phi, y = feature, fill = feature)) +
+  geom_violin(trim = FALSE, scale = "width", color = NA, alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "gray50") +
+  labs(
+    title = "SHAP Value Distribution per Feature (Cost Model)",
+    x = "SHAP Value (Impact on Prediction)",
+    y = NULL
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 9)
+  ) +
+  scale_fill_manual(
+    values = rep(c("#f6765b", "#c7dcff", "#FABD05", "#ffe1fc"), length.out = length(unique(shap_long_cost$feature)))
+  )
+
+
+
+
+
 
 
