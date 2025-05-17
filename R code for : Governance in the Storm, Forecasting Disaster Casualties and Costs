@@ -784,6 +784,73 @@ ggplot(shap_long, aes(x = phi, y = feature, fill = feature)) +
   ) +
   scale_fill_manual(values = rep(c("#f6765b", "#c7dcff", "#FABD05", "#ffe1fc"), length.out = length(unique(shap_long$feature))))
 
+set.seed(42)
+n_permutations <- 30
+r2_null <- numeric(n_permutations)
+
+for (i in 1:n_permutations) {
+  # Permute target
+  train_death_permuted <- train_death
+  train_death_permuted$total_deaths <- sample(train_death$total_deaths)
+  
+  # Train RF on permuted target
+  rf_null <- caret::train(
+    form_death,
+    data = train_death_permuted,
+    method = "rf",
+    trControl = ctrl,
+    tuneGrid = rf_grid,
+    importance = TRUE
+  )
+  
+  # Predict on the *real* test set
+  preds_null <- predict(rf_null, newdata = test_death)
+  
+  # Evaluate performance
+  r2_null[i] <- cor(preds_null, test_death$total_deaths, use = "complete.obs")^2
+}
+
+# Compare against real model R²
+real_r2 <- eval_death["R2"]
+cat("Real model R²:", real_r2, "\n")
+cat("Null mean R²:", mean(r2_null), "\n")
+
+# Plot distribution
+library(ggplot2)
+df_r2 <- data.frame(R2 = r2_null)
+
+# Create density object manually to get coordinates for text
+dens <- density(r2_null)
+
+# Build dataframe for the density
+df_dens <- data.frame(x = dens$x, y = dens$y)
+
+# Plot
+ggplot(df_dens, aes(x = x, y = y)) +
+  geom_area(fill = "#c7dcff", alpha = 0.8, color = "gray40", linewidth = 0.5) +
+  geom_vline(xintercept = real_r2, color = "#EA4336", linetype = "dashed", linewidth = 1.2) +
+  geom_text(
+    aes(x = real_r2, y = max(y) * 0.9),
+    label = paste("Real R² =", round(real_r2, 3)),
+    hjust = -0.1,
+    color = "#EA4336",
+    fontface = "bold",
+    size = 4
+  ) +
+  labs(
+    title = "Permutation Test: R² of Null Models vs Real Model",
+    subtitle = paste0("Real R² = ", round(real_r2, 3),
+                      " | Null mean R² = ", round(mean(r2_null), 3)),
+    x = "R² from Permuted Targets",
+    y = "Density"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
 
 
 ######## Cost Model ############
