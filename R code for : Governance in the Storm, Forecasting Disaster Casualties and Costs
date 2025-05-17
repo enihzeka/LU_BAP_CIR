@@ -1082,9 +1082,7 @@ ggplot(rmse_df_cost, aes(x = R2, y = RMSE, color = Model, shape = Model)) +
 
 
 
-#######top haen wir den ersten ##### 
 
-###### Ab hier RF and GBM on the set ### 
 
 #─── 1. Prep Full Data ────────────────────────────────────────────────────────
 set.seed(42)
@@ -1227,6 +1225,69 @@ ggplot(shap_long_cost, aes(x = phi, y = feature, fill = feature)) +
   )
 
 
+
+# Permutation Test for Cost Model
+
+set.seed(42)
+n_permutations <- 30
+r2_null_cost <- numeric(n_permutations)
+
+for (i in 1:n_permutations) {
+  # Permute target
+  train_cost_permuted <- train_all
+  train_cost_permuted$log_total_damage <- sample(train_all$log_total_damage)
+  
+  # Train RF on permuted target
+  rf_null_cost <- caret::train(
+    form,
+    data = train_cost_permuted,
+    method = "rf",
+    trControl = ctrl,
+    tuneGrid = rf_grid,
+    importance = TRUE
+  )
+  
+  # Predict on the *real* test set
+  preds_null_cost <- predict(rf_null_cost, newdata = test_all)
+  
+  # Evaluate R²
+  r2_null_cost[i] <- cor(preds_null_cost, test_all$log_total_damage, use = "complete.obs")^2
+}
+
+# Real model R²
+real_r2_cost <- eval_all["R2"]
+cat("Real model R²:", real_r2_cost, "\n")
+cat("Null mean R²:", mean(r2_null_cost), "\n")
+
+
+df_r2_cost <- data.frame(R2 = r2_null_cost)
+dens_cost <- density(r2_null_cost)
+df_dens_cost <- data.frame(x = dens_cost$x, y = dens_cost$y)
+
+ggplot(df_dens_cost, aes(x = x, y = y)) +
+  geom_area(fill = "#ffe1fc", alpha = 0.8, color = "gray40", linewidth = 0.5) +
+  geom_vline(xintercept = real_r2_cost, color = "#EA4336", linetype = "dashed", linewidth = 1.2) +
+  geom_text(
+    aes(x = real_r2_cost, y = max(y) * 0.9),
+    label = paste("Real R² =", round(real_r2_cost, 3)),
+    hjust = -0.1,
+    color = "#EA4336",
+    fontface = "bold",
+    size = 4
+  ) +
+  labs(
+    title = "Permutation Test: R² of Null Models vs Real Model (Cost Model)",
+    subtitle = paste0("Real R² = ", round(real_r2_cost, 3),
+                      " | Null mean R² = ", round(mean(r2_null_cost), 3)),
+    x = "R² from Permuted Targets",
+    y = "Density"
+  ) +
+  theme_minimal(base_family = "Times") +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
 
 
 
